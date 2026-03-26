@@ -68,7 +68,8 @@ async def scrape_events() -> list[dict]:
     events = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # --no-sandbox required for LXC containers (Proxmox) and some CI environments
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
         page = await browser.new_page()
 
         try:
