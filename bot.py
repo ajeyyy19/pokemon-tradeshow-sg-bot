@@ -33,8 +33,18 @@ SGT = ZoneInfo("Asia/Singapore")
 EVENTS_FILE = Path(__file__).parent / "events.json"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 ADMIN_ID = 7609501467
+
+# Support topic threads: TELEGRAM_CHAT_ID can be "-1002944210584_2780" (chat_id_threadid)
+# or a plain chat ID like "-1002944210584"
+_raw_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+if "_" in _raw_chat_id:
+    _parts = _raw_chat_id.split("_", 1)
+    CHAT_ID = _parts[0]
+    THREAD_ID = int(_parts[1])
+else:
+    CHAT_ID = _raw_chat_id
+    THREAD_ID = None
 
 
 def admin_only(func):
@@ -169,6 +179,7 @@ async def send_weekly_update(app: Application) -> None:
             chat_id=CHAT_ID,
             text=message,
             parse_mode=ParseMode.HTML,
+            message_thread_id=THREAD_ID,
         )
         logger.info("Weekly update sent to chat %s (%d events)", CHAT_ID, len(events))
     except Exception as e:
@@ -208,6 +219,7 @@ async def cmd_push(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id=CHAT_ID,
         text=message,
         parse_mode=ParseMode.HTML,
+        message_thread_id=THREAD_ID,
     )
     # Confirm to the person who triggered it (if they're not in the group chat)
     if str(update.effective_chat.id) != str(CHAT_ID):
