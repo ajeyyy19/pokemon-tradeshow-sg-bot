@@ -34,6 +34,17 @@ EVENTS_FILE = Path(__file__).parent / "events.json"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+ADMIN_ID = 7609501467
+
+
+def admin_only(func):
+    """Decorator that silently ignores commands from non-admin users."""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id != ADMIN_ID:
+            logger.warning("Unauthorised command attempt from user %s", update.effective_user.id)
+            return
+        return await func(update, context)
+    return wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +179,7 @@ async def send_weekly_update(app: Application) -> None:
 # Command handlers
 # ---------------------------------------------------------------------------
 
+@admin_only
 async def cmd_thisweek(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/thisweek — show tradeshows happening this week."""
     today = datetime.now(SGT).date()
@@ -177,12 +189,14 @@ async def cmd_thisweek(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
 
+@admin_only
 async def cmd_upcoming(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/upcoming — show tradeshows in the next 4 weeks."""
     message = format_upcoming_message(weeks=4)
     await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
 
+@admin_only
 async def cmd_push(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/push — manually send this week's digest to the group chat."""
     today = datetime.now(SGT).date()
@@ -200,6 +214,7 @@ async def cmd_push(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("✅ Pushed to the group!")
 
 
+@admin_only
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/start — welcome message."""
     text = (
