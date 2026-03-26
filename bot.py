@@ -275,8 +275,24 @@ def setup_scheduler(app: Application) -> AsyncIOScheduler:
 
     # Refresh events.json every Sunday at 23:00 SGT (async job)
     async def refresh_events():
-        events = await run_scraper()
-        logger.info("Scheduled scrape complete — %d events loaded", len(events))
+        old_events = load_events()
+        old_keys = {(e["name"], e["start_date"]) for e in old_events}
+
+        new_events = await run_scraper()
+        logger.info("Scheduled scrape complete — %d events loaded", len(new_events))
+
+        added = [e for e in new_events if (e["name"], e["start_date"]) not in old_keys]
+        if added:
+            logger.info("%d new event(s) detected — notifying group", len(added))
+            lines = ["🆕 <b>New tradeshow(s) added!</b>\n"]
+            for ev in added:
+                lines.append(format_event(ev))
+            await app.bot.send_message(
+                chat_id=CHAT_ID,
+                text="\n\n".join(lines),
+                parse_mode=ParseMode.HTML,
+                message_thread_id=THREAD_ID,
+            )
 
     scheduler.add_job(
         refresh_events,
