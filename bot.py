@@ -113,19 +113,18 @@ def format_date_range(start_str: str, end_str: str) -> str:
 
 
 def format_event(ev: dict) -> str:
-    """Format a single event as a Telegram HTML block."""
+    """Format a single event as a clean Telegram HTML block."""
     date_range = format_date_range(ev["start_date"], ev["end_date"])
-    lines = [
-        f"🃏 <b>{ev['name']}</b>",
-        f"📅 {date_range}",
-        f"📍 {ev['venue']}",
-    ]
-    if ev.get("address"):
-        lines.append(f"🏠 {ev['address']}")
+    lines = [f"<b>{ev['name']}</b>", date_range]
+    if ev.get("venue"):
+        location = ev["venue"]
+        if ev.get("address"):
+            location += f", {ev['address']}"
+        lines.append(location)
     if ev.get("hours") and ev["hours"] != "TBC":
-        lines.append(f"🕐 {ev['hours']}")
+        lines.append(ev["hours"])
     elif ev.get("hours") == "TBC":
-        lines.append("🕐 Hours TBC")
+        lines.append("Hours TBC")
     return "\n".join(lines)
 
 
@@ -134,11 +133,11 @@ def format_weekly_message(events: list[dict], week_start: date, week_end: date) 
     header_date = f"{week_start.strftime('%-d %b')} – {week_end.strftime('%-d %b %Y')}"
     if not events:
         return (
-            f"🗓 <b>TCG Tradeshows This Week</b> ({header_date})\n\n"
-            "No tradeshows this week. Stay tuned for upcoming events! 👀"
+            f"📅 <b>TCG Tradeshows This Week</b> ({header_date})\n\n"
+            "No tradeshows this week. See you next week!"
         )
 
-    parts = [f"🗓 <b>TCG Tradeshows This Week</b> ({header_date})\n"]
+    parts = [f"📅 <b>TCG Tradeshows This Week</b> ({header_date})\n"]
     for ev in events:
         parts.append(format_event(ev))
     return "\n\n".join(parts)
