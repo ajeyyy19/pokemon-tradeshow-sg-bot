@@ -120,7 +120,6 @@ def format_weekly_message(events: list[dict], week_start: date, week_end: date) 
     parts = [f"🗓 <b>TCG Tradeshows This Week</b> ({header_date})\n"]
     for ev in events:
         parts.append(format_event(ev))
-    parts.append("\n📌 Source: tcgcards.sg")
     return "\n\n".join(parts)
 
 
@@ -140,7 +139,6 @@ def format_upcoming_message(weeks: int = 4) -> str:
     parts = [f"📅 <b>Upcoming TCG Tradeshows</b> (next {weeks} weeks)\n"]
     for ev in events:
         parts.append(format_event(ev))
-    parts.append("\n📌 Source: tcgcards.sg")
     return "\n\n".join(parts)
 
 
