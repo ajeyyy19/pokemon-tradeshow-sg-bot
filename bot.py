@@ -185,6 +185,23 @@ async def cmd_upcoming(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
 
+async def cmd_push(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/push — manually send this week's digest to the group chat."""
+    today = datetime.now(SGT).date()
+    monday, sunday = week_bounds(today)
+    events = events_in_range(monday, sunday)
+    message = format_weekly_message(events, monday, sunday)
+
+    await context.bot.send_message(
+        chat_id=CHAT_ID,
+        text=message,
+        parse_mode=ParseMode.HTML,
+    )
+    # Confirm to the person who triggered it (if they're not in the group chat)
+    if str(update.effective_chat.id) != str(CHAT_ID):
+        await update.message.reply_text("✅ Pushed to the group!")
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/start — welcome message."""
     text = (
@@ -194,6 +211,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Commands:</b>\n"
         "/thisweek — tradeshows happening this week\n"
         "/upcoming — next 4 weeks of events\n"
+        "/push — manually push this week's events to the group\n"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -213,6 +231,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("thisweek", cmd_thisweek))
     app.add_handler(CommandHandler("upcoming", cmd_upcoming))
+    app.add_handler(CommandHandler("push", cmd_push))
     return app
 
 
