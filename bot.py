@@ -296,9 +296,9 @@ def setup_scheduler(app: Application) -> AsyncIOScheduler:
 
     scheduler.add_job(
         refresh_events,
-        CronTrigger(day_of_week="sun", hour=23, minute=0, timezone=SGT),
-        id="weekly_scrape",
-        name="Weekly event data refresh",
+        CronTrigger(hour=21, minute=0, timezone=SGT),
+        id="daily_scrape",
+        name="Daily event data refresh",
         replace_existing=True,
     )
 
