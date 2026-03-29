@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 SGT = ZoneInfo("Asia/Singapore")
 EVENTS_FILE = Path(__file__).parent / "events.json"
+DIGEST_STATE_FILE = Path(__file__).parent / "digest_state.json"
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_ID = 7609501467
@@ -60,6 +61,22 @@ def admin_only(func):
 # ---------------------------------------------------------------------------
 # Event helpers
 # ---------------------------------------------------------------------------
+
+def get_last_digest_monday() -> date | None:
+    """Return the Monday of the last week for which a digest was sent, or None."""
+    if not DIGEST_STATE_FILE.exists():
+        return None
+    with open(DIGEST_STATE_FILE) as f:
+        data = json.load(f)
+    raw = data.get("last_digest_monday")
+    return date.fromisoformat(raw) if raw else None
+
+
+def save_last_digest_monday(monday: date) -> None:
+    """Persist the Monday of the week whose digest was just sent."""
+    with open(DIGEST_STATE_FILE, "w") as f:
+        json.dump({"last_digest_monday": monday.isoformat()}, f)
+
 
 def load_events() -> list[dict]:
     """Load events from events.json."""
@@ -180,6 +197,7 @@ async def send_weekly_update(app: Application) -> None:
             parse_mode=ParseMode.HTML,
             message_thread_id=THREAD_ID,
         )
+        save_last_digest_monday(monday)
         logger.info("Weekly update sent to chat %s (%d events)", CHAT_ID, len(events))
     except Exception as e:
         logger.error("Failed to send weekly update: %s", e)
@@ -220,6 +238,7 @@ async def cmd_push(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode=ParseMode.HTML,
         message_thread_id=THREAD_ID,
     )
+    save_last_digest_monday(monday)
     # Confirm to the person who triggered it (if they're not in the group chat)
     if str(update.effective_chat.id) != str(CHAT_ID):
         await update.message.reply_text("✅ Pushed to the group!")
@@ -282,10 +301,24 @@ def setup_scheduler(app: Application) -> AsyncIOScheduler:
         logger.info("Scheduled scrape complete — %d events loaded", len(new_events))
 
         added = [e for e in new_events if (e["name"], e["start_date"]) not in old_keys]
-        if added:
-            logger.info("%d new event(s) detected — notifying group", len(added))
-            lines = ["🆕 <b>New tradeshow(s) added!</b>\n"]
-            for ev in added:
+        if not added:
+            return
+
+        # Only alert for events whose week's digest has already been sent.
+        # New events in future weeks will appear naturally in Monday's digest.
+        last_digest_monday = get_last_digest_monday()
+        alertable = []
+        for ev in added:
+            ev_monday, _ = week_bounds(date.fromisoformat(ev["start_date"]))
+            if last_digest_monday is not None and ev_monday <= last_digest_monday:
+                alertable.append(ev)
+            else:
+                logger.info("New event %r (week of %s) — silent until Monday digest", ev["name"], ev_monday)
+
+        if alertable:
+            logger.info("%d new event(s) detected — notifying group", len(alertable))
+            lines = ["🆕 <b>New tradeshow(s) added!</b>"]
+            for ev in alertable:
                 lines.append(format_event(ev))
             await app.bot.send_message(
                 chat_id=CHAT_ID,
