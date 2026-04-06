@@ -119,10 +119,25 @@ def parse_events_from_text(text: str) -> list[dict]:
             event_name = line
             date_line = lines[i + 1]
 
-            # Collect venue, address, hours from subsequent lines
+            # Collect venue, address, hours from subsequent lines.
+            # Some events omit the address line (only 4 lines total), so detect
+            # whether lines[i+3] is an admission/hours line or a street address.
+            admission_pattern = re.compile(
+                r'^(General\s+Admission|Free\s+Admission|Admission)\s*:', re.IGNORECASE
+            )
             venue = lines[i + 2] if i + 2 < len(lines) else ""
-            address = lines[i + 3] if i + 3 < len(lines) else ""
-            hours_line = lines[i + 4] if i + 4 < len(lines) else ""
+            line_i3 = lines[i + 3] if i + 3 < len(lines) else ""
+
+            if admission_pattern.match(line_i3):
+                # 4-line format: no address
+                address = ""
+                hours_line = line_i3
+                advance = 4
+            else:
+                # 5-line format: address present
+                address = line_i3
+                hours_line = lines[i + 4] if i + 4 < len(lines) else ""
+                advance = 5
 
             # Clean up hours — remove "General Admission:" prefix
             hours = re.sub(r'^(General\s+Admission|Free\s+Admission|Admission)\s*:\s*', '', hours_line, flags=re.IGNORECASE).strip()
@@ -139,7 +154,7 @@ def parse_events_from_text(text: str) -> list[dict]:
                     "address": address,
                     "hours": hours,
                 })
-                i += 5
+                i += advance
                 continue
             except ValueError as e:
                 logger.warning("Date parse error for %r: %s", date_line, e)
