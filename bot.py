@@ -295,37 +295,80 @@ def setup_scheduler(app: Application) -> AsyncIOScheduler:
     # Refresh events.json every Sunday at 23:00 SGT (async job)
     async def refresh_events():
         old_events = load_events()
-        old_keys = {(e["name"], e["start_date"]) for e in old_events}
+        old_by_key = {(e["name"], e["start_date"]): e for e in old_events}
 
         new_events = await run_scraper()
         logger.info("Scheduled scrape complete — %d events loaded", len(new_events))
 
-        added = [e for e in new_events if (e["name"], e["start_date"]) not in old_keys]
-        if not added:
+        added: list[dict] = []
+        updated: list[tuple[dict, dict, list[tuple[str, str, str]]]] = []
+        tracked_fields = ("end_date", "venue", "address", "hours")
+
+        for ev in new_events:
+            key = (ev["name"], ev["start_date"])
+            prev = old_by_key.get(key)
+            if prev is None:
+                added.append(ev)
+                continue
+            changes = [
+                (f, prev.get(f, ""), ev.get(f, ""))
+                for f in tracked_fields
+                if (prev.get(f) or "") != (ev.get(f) or "")
+            ]
+            if changes:
+                updated.append((prev, ev, changes))
+
+        if not added and not updated:
             return
 
         # Only alert for events whose week's digest has already been sent.
-        # New events in future weeks will appear naturally in Monday's digest.
+        # Changes to future-week events will appear naturally in Monday's digest.
         last_digest_monday = get_last_digest_monday()
-        alertable = []
-        for ev in added:
-            ev_monday, _ = week_bounds(date.fromisoformat(ev["start_date"]))
-            if last_digest_monday is not None and ev_monday <= last_digest_monday:
-                alertable.append(ev)
-            else:
-                logger.info("New event %r (week of %s) — silent until Monday digest", ev["name"], ev_monday)
 
-        if alertable:
-            logger.info("%d new event(s) detected — notifying group", len(alertable))
-            lines = ["🆕 <b>New tradeshow(s) added!</b>"]
-            for ev in alertable:
-                lines.append(format_event(ev))
-            await app.bot.send_message(
-                chat_id=CHAT_ID,
-                text="\n\n".join(lines),
-                parse_mode=ParseMode.HTML,
-                message_thread_id=THREAD_ID,
-            )
+        def already_digested(ev: dict) -> bool:
+            ev_monday, _ = week_bounds(date.fromisoformat(ev["start_date"]))
+            return last_digest_monday is not None and ev_monday <= last_digest_monday
+
+        alertable_added = [e for e in added if already_digested(e)]
+        for e in added:
+            if e not in alertable_added:
+                logger.info("New event %r — silent until Monday digest", e["name"])
+
+        alertable_updated = [(p, n, c) for p, n, c in updated if already_digested(n)]
+        for _, n, _ in updated:
+            if not already_digested(n):
+                logger.info("Updated event %r — silent until Monday digest", n["name"])
+
+        if not alertable_added and not alertable_updated:
+            return
+
+        sections: list[str] = []
+        if alertable_added:
+            logger.info("%d new event(s) detected — notifying group", len(alertable_added))
+            block = ["🆕 <b>New tradeshow(s) added!</b>"]
+            for ev in alertable_added:
+                block.append(format_event(ev))
+            sections.append("\n\n".join(block))
+
+        if alertable_updated:
+            logger.info("%d event update(s) detected — notifying group", len(alertable_updated))
+            block = ["🔄 <b>Tradeshow update(s)</b>"]
+            for _, new_ev, changes in alertable_updated:
+                lines = [f"<b>{new_ev['name']}</b>", format_date_range(new_ev["start_date"], new_ev["end_date"])]
+                for field, old_val, new_val in changes:
+                    label = "Hours" if field == "hours" else field.replace("_", " ").title()
+                    old_disp = old_val if old_val else "—"
+                    new_disp = new_val if new_val else "—"
+                    lines.append(f"• {label}: {old_disp} → {new_disp}")
+                block.append("\n".join(lines))
+            sections.append("\n\n".join(block))
+
+        await app.bot.send_message(
+            chat_id=CHAT_ID,
+            text="\n\n".join(sections),
+            parse_mode=ParseMode.HTML,
+            message_thread_id=THREAD_ID,
+        )
 
     scheduler.add_job(
         refresh_events,
