@@ -18,6 +18,8 @@ from datetime import date
 from pathlib import Path
 from playwright.async_api import async_playwright
 
+from alerts import check_scrape_result, check_upcoming
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -192,14 +194,19 @@ def save_events(events: list[dict]) -> None:
 
 
 async def run_scraper() -> list[dict]:
+    cached = load_existing_events()
     scraped = await scrape_events()
+    await check_scrape_result(scraped, cached)
 
     if scraped:
         save_events(scraped)
-        return scraped
+        events = scraped
+    else:
+        logger.warning("Scrape returned no events — using cached events.json")
+        events = cached
 
-    logger.warning("Scrape returned no events — using cached events.json")
-    return load_existing_events()
+    await check_upcoming(events)
+    return events
 
 
 if __name__ == "__main__":
