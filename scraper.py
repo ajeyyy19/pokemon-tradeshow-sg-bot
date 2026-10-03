@@ -1,171 +1,183 @@
 """
-Scraper for https://www.tcgcards.sg/Singapore-card-trade-show
-Uses Playwright (headless Chromium) to render the Google Sites page,
-then parses event blocks into structured data saved to events.json.
+Scraper for https://www.tcgcards.sg/singapore-card-trade-show/
+Uses Playwright (headless Chromium) to render the page, walks the
+paginated listing, and parses event blocks into events.json.
+
+Page format (as of Oct 2026):
+    02 Oct 2026 - 03 Oct 2026
+    NEXUS x Slab Acad Midnight Tradeshow
+    Yishun Safra Level 2 (Outside Slab Acad). 60 Yishun Ave 4, Singapore 769027
+    General Admission: 5pm - 2am
 """
 
 import asyncio
 import json
 import re
 import logging
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from playwright.async_api import async_playwright
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-EVENTS_URL = "https://www.tcgcards.sg/Singapore-card-trade-show"
+BASE_URL = "https://www.tcgcards.sg/singapore-card-trade-show/"
 EVENTS_FILE = Path(__file__).parent / "events.json"
+MAX_PAGES = 25
 
-MONTH_MAP = {
-    "january": 1, "february": 2, "march": 3, "april": 4,
-    "may": 5, "june": 6, "july": 7, "august": 8,
-    "september": 9, "october": 10, "november": 11, "december": 12,
+MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
 }
 
+# Matches a single date like "02 Oct 2026" or "2 October 2026"
+SINGLE_DATE = re.compile(
+    r"\b(\d{1,2})(?:st|nd|rd|th)?\s+"
+    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+"
+    r"(20\d{2})\b",
+    re.IGNORECASE,
+)
 
-def parse_date_string(date_str: str) -> tuple[date, date]:
+ADMISSION = re.compile(
+    r"^\s*(general\s+admission|free\s+admission|admission|entry)\s*:",
+    re.IGNORECASE,
+)
+
+
+def is_date_line(line: str) -> bool:
+    """A line that starts with a date — the first line of an event block."""
+    return bool(SINGLE_DATE.match(line.strip()))
+
+
+def parse_date_line(line: str) -> tuple[date, date]:
     """
-    Parse date strings like:
-      "28, 29th March 2026"    → (2026-03-28, 2026-03-29)
-      "17-19th April 2026"     → (2026-04-17, 2026-04-19)
-      "31st May 2026"          → (2026-05-31, 2026-05-31)
-      "1-3rd May 2026"         → (2026-05-01, 2026-05-03)
+    Parse '02 Oct 2026 - 03 Oct 2026' or '11 Oct 2026'.
     Returns (start_date, end_date).
     """
-    date_str = date_str.strip()
-    # Extract year and month
-    year_match = re.search(r'\b(20\d{2})\b', date_str)
-    month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)', date_str, re.IGNORECASE)
-    if not year_match or not month_match:
-        raise ValueError(f"Cannot parse date: {date_str!r}")
+    matches = SINGLE_DATE.findall(line)
+    if not matches:
+        raise ValueError(f"Cannot parse date: {line!r}")
 
-    year = int(year_match.group(1))
-    month = MONTH_MAP[month_match.group(1).lower()]
+    def to_date(m) -> date:
+        day, mon, year = m
+        key = mon[:3].lower()
+        if key not in MONTHS:
+            raise ValueError(f"Unknown month {mon!r} in {line!r}")
+        return date(int(year), MONTHS[key], int(day))
 
-    # Extract day numbers — strip ordinal suffixes
-    days_part = re.sub(r'(january|february|march|april|may|june|july|august|september|october|november|december)', '', date_str, flags=re.IGNORECASE)
-    days_part = re.sub(r'\b(20\d{2})\b', '', days_part)
-    days_part = re.sub(r'(st|nd|rd|th)', '', days_part)
-    days_part = days_part.strip()
+    start = to_date(matches[0])
+    end = to_date(matches[-1])
+    if end < start:
+        end = start
+    return start, end
 
-    # Find all numbers
-    numbers = re.findall(r'\d+', days_part)
-    if not numbers:
-        raise ValueError(f"No day numbers found in: {date_str!r}")
 
-    day_ints = [int(n) for n in numbers]
-    start_day = day_ints[0]
-    end_day = day_ints[-1]  # last number is end day
+def split_location(line: str) -> tuple[str, str]:
+    """
+    The site merges venue and address into one line, usually separated
+    by '. ' — e.g. 'Junction 8. 9 Bishan Pl, Singapore 579837'.
+    """
+    line = line.strip()
+    parts = line.split(". ", 1)
+    if len(parts) == 2 and parts[1]:
+        return parts[0].strip(), parts[1].strip()
+    return line, ""
 
-    return date(year, month, start_day), date(year, month, end_day)
+
+def parse_events_from_text(text: str) -> list[dict]:
+    """
+    Walk the page text. Each event starts with a date line; everything
+    up to the next date line belongs to that event.
+    """
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    date_idx = [i for i, l in enumerate(lines) if is_date_line(l)]
+    events = []
+
+    for n, start in enumerate(date_idx):
+        stop = date_idx[n + 1] if n + 1 < len(date_idx) else len(lines)
+        block = lines[start + 1:stop]
+        if not block:
+            continue
+
+        try:
+            start_date, end_date = parse_date_line(lines[start])
+        except ValueError as e:
+            logger.warning("Skipping block: %s", e)
+            continue
+
+        name = block[0]
+        hours = "TBC"
+        location_lines = []
+
+        for line in block[1:]:
+            if ADMISSION.match(line):
+                hours = ADMISSION.sub("", line).strip() or "TBC"
+                break
+            location_lines.append(line)
+
+        venue, address = ("", "")
+        if location_lines:
+            venue, address = split_location(location_lines[0])
+            # Any further lines before the admission line are extra address detail
+            if len(location_lines) > 1 and not address:
+                address = " ".join(location_lines[1:]).strip()
+
+        events.append({
+            "name": name,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "venue": venue,
+            "address": address,
+            "hours": hours,
+        })
+
+    return events
 
 
 async def scrape_events() -> list[dict]:
-    """Scrape tcgcards.sg and return list of event dicts."""
-    logger.info("Starting Playwright scrape of %s", EVENTS_URL)
-    events = []
+    """Scrape every page of the listing and return deduplicated events."""
+    logger.info("Starting Playwright scrape of %s", BASE_URL)
+    all_events: list[dict] = []
+    seen: set[tuple[str, str]] = set()
 
     async with async_playwright() as p:
-        # --no-sandbox required for LXC containers (Proxmox) and some CI environments
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox"],
+        )
         page = await browser.new_page()
 
         try:
-            await page.goto(EVENTS_URL, wait_until="networkidle", timeout=60000)
-            # Google Sites renders content in iframes or shadow DOM — wait for text
-            await page.wait_for_timeout(3000)
+            for page_num in range(1, MAX_PAGES + 1):
+                url = BASE_URL if page_num == 1 else f"{BASE_URL}?epage={page_num}"
+                await page.goto(url, wait_until="networkidle", timeout=60000)
+                await page.wait_for_timeout(2000)
 
-            # Get all text content from the page
-            content = await page.inner_text("body")
-            events = parse_events_from_text(content)
-            logger.info("Scraped %d events from website", len(events))
+                text = await page.inner_text("body")
+                found = parse_events_from_text(text)
+
+                new = [e for e in found if (e["name"], e["start_date"]) not in seen]
+                for e in new:
+                    seen.add((e["name"], e["start_date"]))
+                all_events.extend(new)
+
+                logger.info("Page %d: %d events (%d new)", page_num, len(found), len(new))
+
+                # Stop when a page yields nothing, or nothing we haven't seen
+                if not found or not new:
+                    break
+
+            logger.info("Scraped %d events from website", len(all_events))
 
         except Exception as e:
             logger.error("Scrape failed: %s", e)
         finally:
             await browser.close()
 
-    return events
-
-
-def parse_events_from_text(text: str) -> list[dict]:
-    """
-    Parse the raw page text into event dicts.
-    The page structure repeats:
-      EVENT NAME (ALL CAPS heading)
-      Date line (e.g. "28, 29th March 2026")
-      Venue name
-      Address
-      Admission/hours line
-    """
-    events = []
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-
-    # Date pattern to identify date lines
-    date_pattern = re.compile(
-        r'\b\d{1,2}(?:st|nd|rd|th)?(?:\s*[,\-–]\s*\d{1,2}(?:st|nd|rd|th)?)?\s+'
-        r'(?:January|February|March|April|May|June|July|August|September|October|November|December)'
-        r'\s+20\d{2}\b',
-        re.IGNORECASE
-    )
-
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        # Check if next line (or this line) is a date — then previous line was event name
-        if i + 1 < len(lines) and date_pattern.search(lines[i + 1]):
-            event_name = line
-            date_line = lines[i + 1]
-
-            # Collect venue, address, hours from subsequent lines.
-            # Some events omit the address line (only 4 lines total), so detect
-            # whether lines[i+3] is an admission/hours line or a street address.
-            admission_pattern = re.compile(
-                r'^(General\s+Admission|Free\s+Admission|Admission)\s*:', re.IGNORECASE
-            )
-            venue = lines[i + 2] if i + 2 < len(lines) else ""
-            line_i3 = lines[i + 3] if i + 3 < len(lines) else ""
-
-            if admission_pattern.match(line_i3):
-                # 4-line format: no address
-                address = ""
-                hours_line = line_i3
-                advance = 4
-            else:
-                # 5-line format: address present
-                address = line_i3
-                hours_line = lines[i + 4] if i + 4 < len(lines) else ""
-                advance = 5
-
-            # Clean up hours — remove "General Admission:" prefix
-            hours = re.sub(r'^(General\s+Admission|Free\s+Admission|Admission)\s*:\s*', '', hours_line, flags=re.IGNORECASE).strip()
-            if not hours:
-                hours = "TBC"
-
-            try:
-                start_date, end_date = parse_date_string(date_line)
-                events.append({
-                    "name": event_name,
-                    "start_date": start_date.isoformat(),
-                    "end_date": end_date.isoformat(),
-                    "venue": venue,
-                    "address": address,
-                    "hours": hours,
-                })
-                i += advance
-                continue
-            except ValueError as e:
-                logger.warning("Date parse error for %r: %s", date_line, e)
-
-        i += 1
-
-    return events
+    return all_events
 
 
 def load_existing_events() -> list[dict]:
-    """Load events from events.json if it exists."""
     if EVENTS_FILE.exists():
         with open(EVENTS_FILE) as f:
             return json.load(f)
@@ -173,7 +185,6 @@ def load_existing_events() -> list[dict]:
 
 
 def save_events(events: list[dict]) -> None:
-    """Save events list to events.json, sorted by start_date."""
     events_sorted = sorted(events, key=lambda e: e["start_date"])
     with open(EVENTS_FILE, "w") as f:
         json.dump(events_sorted, f, indent=2, ensure_ascii=False)
@@ -181,10 +192,6 @@ def save_events(events: list[dict]) -> None:
 
 
 async def run_scraper() -> list[dict]:
-    """
-    Run scraper. If scrape yields results, save and return them.
-    If scrape fails or returns nothing, fall back to existing events.json.
-    """
     scraped = await scrape_events()
 
     if scraped:
